@@ -6,6 +6,7 @@ static INIT: Once = Once::new();
 
 // Environment variable to control enhanced output
 const ENV_ENHANCED_OUTPUT: &str = "REST_ENHANCED_OUTPUT";
+const DEFAULT_ENHANCED_OUTPUT: bool = true;
 
 /// Configuration for Rest's output and behavior
 pub struct Config {
@@ -37,16 +38,13 @@ impl Clone for Config {
 impl Config {
     /// Creates a new configuration with default settings
     pub fn new() -> Self {
-        // Check for environment variable to enable enhanced output
-        let enhanced_from_env = match env::var(ENV_ENHANCED_OUTPUT) {
-            Ok(val) => {
-                let lowercase_val = val.to_lowercase();
-                lowercase_val == "true" || lowercase_val == "1" || lowercase_val == "yes"
-            }
-            Err(_) => false, // Default to standard output if env var not set
+        // Check for environment variable to enable enhanced output.
+        let enhanced_output = match env::var(ENV_ENHANCED_OUTPUT).ok() {
+            Some(val) => bool_from_str(&val, DEFAULT_ENHANCED_OUTPUT),
+            None => DEFAULT_ENHANCED_OUTPUT,
         };
 
-        Self { use_colors: true, use_unicode_symbols: true, show_success_details: true, enhanced_output: enhanced_from_env }
+        Self { use_colors: true, use_unicode_symbols: true, show_success_details: true, enhanced_output }
     }
 
     /// Enable or disable colored output
@@ -111,12 +109,43 @@ pub fn is_enhanced_output_enabled() -> bool {
     return config.enhanced_output;
 }
 
+/// Convert from one of the allowed string values to a boolean.
+fn bool_from_str(val: &str, default: bool) -> bool {
+    match val.to_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        _ => {
+            use colored::Colorize;
+            let warning = "WARNING".yellow();
+            let val_str = val.red();
+            let default_str = format!("{}", default).blue();
+            let allowed: Vec<_> =
+                ["true", "false", "1", "0", "yes", "no", "on", "off"].into_iter().map(|it| it.green().to_string()).collect();
+            let allowed = allowed.join(", ");
+            eprintln!(
+                "{warning}: Unrecognized value for environment variable \
+                {ENV_ENHANCED_OUTPUT}: {val_str}.\n\
+                Defaulting to {default_str}.\n\
+                (Allowed values: {allowed})",
+            );
+            default
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::env;
 
-    // Helper function to reset environment variables
+    // Helper functions set/reset environment variables
+    // XXX: These are _truly_ unsafe in multithreaded programs on UNIX, which is probably why tests randomly crash.
+    fn set_env_var(value: &str) {
+        unsafe {
+            env::set_var(ENV_ENHANCED_OUTPUT, value);
+        }
+    }
+
     fn reset_env_var() {
         unsafe {
             env::remove_var(ENV_ENHANCED_OUTPUT);
@@ -134,16 +163,14 @@ mod tests {
         assert_eq!(config.use_colors, true);
         assert_eq!(config.use_unicode_symbols, true);
         assert_eq!(config.show_success_details, true);
-        assert_eq!(config.enhanced_output, false); // Default is false without env var
+        assert_eq!(config.enhanced_output, true, "Default is true without env var");
     }
 
     #[test]
     fn test_config_env_var_true() {
         // Test with environment variable set to true
         reset_env_var();
-        unsafe {
-            env::set_var(ENV_ENHANCED_OUTPUT, "true");
-        }
+        set_env_var("true");
 
         let config = Config::new();
         assert_eq!(config.enhanced_output, true);
@@ -155,10 +182,7 @@ mod tests {
     #[test]
     fn test_config_env_var_false() {
         // Test with environment variable set to false
-        reset_env_var();
-        unsafe {
-            env::set_var(ENV_ENHANCED_OUTPUT, "false");
-        }
+        set_env_var("false");
 
         let config = Config::new();
         assert_eq!(config.enhanced_output, false);
@@ -170,31 +194,32 @@ mod tests {
     #[test]
     #[ignore] // This test is ignored because sometimes it fails on Github Actions
     fn test_config_env_var_alternative_values() {
-        // Test alternative true values
-        reset_env_var();
+        // True values
+        set_env_var("1");
+        assert_eq!(Config::new().enhanced_output, true);
 
-        // Test "1" as true
-        unsafe {
-            env::set_var(ENV_ENHANCED_OUTPUT, "1");
-        }
-        let config = Config::new();
-        assert_eq!(config.enhanced_output, true);
+        set_env_var("yes");
+        assert_eq!(Config::new().enhanced_output, true);
 
-        // Test "yes" as true
-        reset_env_var();
-        unsafe {
-            env::set_var(ENV_ENHANCED_OUTPUT, "yes");
-        }
-        let config = Config::new();
-        assert_eq!(config.enhanced_output, true);
+        set_env_var("on");
+        assert_eq!(Config::new().enhanced_output, true);
+
+        set_env_var("0");
+        assert_eq!(Config::new().enhanced_output, false);
+
+        set_env_var("no");
+        assert_eq!(Config::new().enhanced_output, false);
+
+        set_env_var("off");
+        assert_eq!(Config::new().enhanced_output, false);
+
+        // Garbage inputs: Env ignored, use default value.
+        set_env_var("uh ... dunno");
+        assert_eq!(Config::new().enhanced_output, DEFAULT_ENHANCED_OUTPUT);
 
         // Test case-insensitivity
-        reset_env_var();
-        unsafe {
-            env::set_var(ENV_ENHANCED_OUTPUT, "TRUE");
-        }
-        let config = Config::new();
-        assert_eq!(config.enhanced_output, true);
+        set_env_var("TRUE");
+        assert_eq!(Config::new().enhanced_output, true);
 
         // Cleanup
         reset_env_var();
